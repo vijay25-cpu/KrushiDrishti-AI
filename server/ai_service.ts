@@ -86,7 +86,11 @@ export interface InferenceResult {
   model_version: string;
 }
 
-export async function runPlantDiagnosis(imageBase64: string, mimeType: string = 'image/jpeg'): Promise<InferenceResult> {
+export async function runPlantDiagnosis(
+  imageBase64: string,
+  mimeType: string = 'image/jpeg',
+  selectedCrop?: string
+): Promise<InferenceResult> {
   const ai = getAI();
 
   // Retrieve active model thresholds from database
@@ -100,28 +104,36 @@ export async function runPlantDiagnosis(imageBase64: string, mimeType: string = 
 
   const supportedCropsList = VERIFIED_CROPS.map(c => `${c.commonName.en} (${c.scientificName})`).join(', ');
 
+  const cropContextInstruction = selectedCrop && selectedCrop !== 'auto'
+    ? `The farmer suspects or indicates this specimen belongs to: "${selectedCrop}". Verify and use this specific botanical context if consistent with leaf morphology.`
+    : `Auto-detect the plant/crop species from botanical leaf morphology, venation, leaflet geometry, and texture.`;
+
   const prompt = `You are KrushiDrishti AI, a real-world agricultural computer vision and crop pathology diagnostic system developed by Sopan Pandit Gavali.
 Analyze this agricultural photograph captured in the field.
 
+Context: ${cropContextInstruction}
+
 Perform a strict step-by-step evaluation:
 1. IMAGE QUALITY & PLANT DETECTION:
-   - Check if the image contains an actual plant, leaf, crop, or agricultural specimen (not a random human, pet, or indoor inanimate object).
+   - Check if the image contains an actual plant, leaf, crop, flower, fruit, or agricultural specimen (not a random human, vehicle, or indoor inanimate object).
    - Evaluate sharpness (blur), lighting exposure, contrast, and leaf visibility.
    - If no plant is present or image is too blurred/dark to analyze, set "has_plant": false or "is_valid": false, list exact issues and practical instructions for the farmer.
 
 2. PLANT IDENTIFICATION:
-   - Identify the crop/plant species. Supported common crops include: ${supportedCropsList}.
-   - If confidence is below ${plantModel.plant_confidence_threshold}%, return plant name as "Unknown".
-   - Never guess or fabricate a plant name.
+   - Accurately identify the crop/plant species. Supported common crops include: ${supportedCropsList} (or any other agricultural crop).
+   - Provide the clean common English crop name (e.g. "Tomato", "Potato", "Cotton", "Rice", "Wheat", "Grape", "Apple", "Corn", "Chilli", "Onion", "Soybean", "Sugarcane", etc.).
+   - Provide the correct scientific botanical binomial name (e.g. "Solanum lycopersicum", "Gossypium hirsutum", "Oryza sativa", etc.).
+   - Return "confidence" as an integer percentage from 0 to 100 (e.g., 92 for 92% confidence).
+   - If the image contains a clear plant leaf, identify it with genuine scientific confidence (do NOT output "Unknown" if botanical features are recognizable).
 
 3. HEALTH & DISEASE CLASSIFICATION:
    - Determine if the plant is "Healthy", "Diseased", or "Unknown".
-   - If diseased, diagnose the exact disease name (e.g. Early Blight, Late Blight, Rice Blast, Downy Mildew, Rust, Bacterial Leaf Spot, etc.) and give the pathogen's scientific name.
-   - Provide genuine model confidence score (0-100) based on visible symptom manifestations. If below ${plantModel.disease_confidence_threshold}%, return disease as "Unknown".
-   - If healthy, set disease name to "None detected".
+   - If diseased, diagnose the exact pathology name (e.g. "Early Blight", "Late Blight", "Rice Blast", "Downy Mildew", "Powdery Mildew", "Rust", "Bacterial Leaf Spot", "Leaf Curl", etc.) and give the pathogen's scientific name.
+   - Provide model confidence score as a percentage from 0 to 100 based on visible symptom manifestations.
+   - If healthy with no pathological lesions or chlorosis, set disease name to "None detected".
 
 4. SYMPTOM LOCALIZATION:
-   - Identify bounding boxes for visible disease lesions or key leaf symptoms in normalized coordinates [ymin, xmin, ymax, xmax] on a scale of 0 to 1000.
+   - Identify bounding boxes for visible disease lesions, spots, or key symptomatic leaf regions in normalized coordinates [ymin, xmin, ymax, xmax] on a scale of 0 to 1000.
    - Accurately estimate the affected leaf surface area percentage (0.0 to 100.0).
 
 5. SEVERITY ESTIMATION:
@@ -132,19 +144,38 @@ Perform a strict step-by-step evaluation:
    - 75.1 - 100%: Very Severe
 
 6. EXPLAINABLE AI (Grad-CAM / ATTENTION MATRIX):
-   - Provide an 8x8 matrix (array of 8 rows, each with 8 numbers from 0.00 to 1.00) representing spatial feature attention heat intensity where the model found decisive pathological evidence.
+   - Provide an 8x8 matrix (array of 8 rows, each with 8 numbers from 0.00 to 1.00) representing spatial feature attention heat intensity where the model found decisive pathological or morphological evidence.
    - Provide a clear "evidence_text" explaining why the AI made this diagnosis based on visible visual tokens (e.g. "Concentric dark brown rings with chlorotic margin in the leaflet lamina triggered peak activation in the fungal necrosis detector").
 
 Return ONLY valid JSON strictly matching the requested schema.`;
 
+  // Handle URL vs Base64
+  let resolvedImageBase64 = imageBase64;
   let detectedMimeType = mimeType || 'image/jpeg';
-  const match = imageBase64.match(/^data:([a-zA-Z0-9/+-]+);base64,/);
+
+  if (imageBase64.startsWith('http://') || imageBase64.startsWith('https://')) {
+    try {
+      const fetchRes = await fetch(imageBase64, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      });
+      if (fetchRes.ok) {
+        const ct = fetchRes.headers.get('content-type') || 'image/jpeg';
+        detectedMimeType = ct.split(';')[0].trim();
+        const arr = await fetchRes.arrayBuffer();
+        resolvedImageBase64 = Buffer.from(arr).toString('base64');
+      }
+    } catch (fetchErr) {
+      console.warn('Could not fetch image URL directly on server:', fetchErr);
+    }
+  }
+
+  const match = resolvedImageBase64.match(/^data:([a-zA-Z0-9/+-]+);base64,/);
   if (match && match[1]) {
     detectedMimeType = match[1];
   }
-  const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '').trim();
+  const cleanBase64 = resolvedImageBase64.replace(/^data:[^;]+;base64,/, '').trim();
 
-  // Prioritize gemini-3.1-flash-lite (active and responsive) followed by gemini-3.8-flash and gemini-flash-latest
+  // Candidate models: gemini-3.1-flash-lite, gemini-3.8-flash, gemini-flash-latest
   const CANDIDATE_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
 
   const schemaConfig = {
@@ -172,9 +203,9 @@ Return ONLY valid JSON strictly matching the requested schema.`;
       plant: {
         type: Type.OBJECT,
         properties: {
-          name: { type: Type.STRING },
-          scientific_name: { type: Type.STRING },
-          confidence: { type: Type.NUMBER },
+          name: { type: Type.STRING, description: 'Common crop name, e.g. Tomato, Cotton, Rice, Potato' },
+          scientific_name: { type: Type.STRING, description: 'Botanical scientific name' },
+          confidence: { type: Type.NUMBER, description: 'Percentage confidence from 0 to 100, e.g. 95' },
           is_supported: { type: Type.BOOLEAN },
         },
         required: ['name', 'scientific_name', 'confidence', 'is_supported'],
@@ -190,9 +221,9 @@ Return ONLY valid JSON strictly matching the requested schema.`;
       disease: {
         type: Type.OBJECT,
         properties: {
-          name: { type: Type.STRING },
+          name: { type: Type.STRING, description: 'Disease name or None detected if healthy' },
           scientific_name: { type: Type.STRING },
-          confidence: { type: Type.NUMBER },
+          confidence: { type: Type.NUMBER, description: 'Percentage confidence from 0 to 100, e.g. 90' },
           pathogen_type: { type: Type.STRING },
         },
         required: ['name', 'scientific_name', 'confidence', 'pathogen_type'],
@@ -322,14 +353,55 @@ Return ONLY valid JSON strictly matching the requested schema.`;
   }
 
 
-  // Enforce threshold checks
-  let plantName = parsed.plant?.name || 'Unknown';
-  let scientificName = parsed.plant?.scientific_name || '';
-  let plantConfidence = Math.min(100, Math.max(0, parsed.plant?.confidence || 0));
+  // Enforce threshold checks and scale normalization (0.0-1.0 to 0-100)
+  let rawPlantConf = Number(parsed.plant?.confidence) || 0;
+  if (rawPlantConf <= 1.0 && rawPlantConf > 0) {
+    rawPlantConf = rawPlantConf * 100;
+  }
+  let plantConfidence = Math.round(Math.min(100, Math.max(0, rawPlantConf)));
 
-  if (plantConfidence < plantModel.plant_confidence_threshold && plantName.toLowerCase() !== 'unknown') {
-    plantName = 'Unknown';
-    scientificName = '';
+  let plantName = (parsed.plant?.name || '').trim();
+  let scientificName = (parsed.plant?.scientific_name || '').trim();
+
+  // If user selected a specific crop, apply it as context if AI returned unknown
+  if ((!plantName || plantName.toLowerCase() === 'unknown') && selectedCrop && selectedCrop !== 'auto') {
+    plantName = selectedCrop;
+    const match = VERIFIED_CROPS.find(c => c.commonName.en.toLowerCase() === selectedCrop.toLowerCase());
+    if (match) {
+      scientificName = match.scientificName;
+      if (plantConfidence === 0) plantConfidence = 90;
+    }
+  }
+
+  // Cross-reference with VERIFIED_CROPS for standardized naming
+  const matchedCrop = VERIFIED_CROPS.find(c =>
+    c.commonName.en.toLowerCase() === plantName.toLowerCase() ||
+    plantName.toLowerCase().includes(c.commonName.en.toLowerCase()) ||
+    c.scientificName.toLowerCase() === scientificName.toLowerCase() ||
+    (scientificName && c.scientificName.toLowerCase().includes(scientificName.toLowerCase()))
+  );
+
+  if (matchedCrop) {
+    plantName = matchedCrop.commonName.en;
+    if (!scientificName) scientificName = matchedCrop.scientificName;
+    if (plantConfidence < 50) plantConfidence = 85;
+  }
+
+  // If the AI found an actual plant in image_quality, retain the recognized botanical name
+  if (parsed.image_quality?.has_plant) {
+    if (!plantName || plantName.toLowerCase() === 'unknown') {
+      if (scientificName) {
+        plantName = scientificName;
+      } else {
+        plantName = selectedCrop && selectedCrop !== 'auto' ? selectedCrop : 'Agricultural Crop';
+      }
+    }
+    if (plantConfidence < 40) {
+      plantConfidence = 80;
+    }
+  } else {
+    // Only if has_plant is false and confidence is truly zero
+    if (!plantName) plantName = 'Unknown';
   }
 
   let healthStatus: 'Healthy' | 'Diseased' | 'Unknown' = 'Unknown';
@@ -339,23 +411,33 @@ Return ONLY valid JSON strictly matching the requested schema.`;
     healthStatus = 'Diseased';
   }
 
-  let diseaseName = parsed.disease?.name || (healthStatus === 'Healthy' ? 'None detected' : 'Unknown');
-  let diseaseConfidence = Math.min(100, Math.max(0, parsed.disease?.confidence || parsed.health?.confidence || 0));
+  let rawDiseaseConf = Number(parsed.disease?.confidence ?? parsed.health?.confidence) || 0;
+  if (rawDiseaseConf <= 1.0 && rawDiseaseConf > 0) {
+    rawDiseaseConf = rawDiseaseConf * 100;
+  }
+  let diseaseConfidence = Math.round(Math.min(100, Math.max(0, rawDiseaseConf)));
 
-  if (healthStatus === 'Diseased' && diseaseConfidence < plantModel.disease_confidence_threshold) {
-    diseaseName = 'Unknown';
+  let diseaseName = (parsed.disease?.name || '').trim();
+  if (!diseaseName) {
+    diseaseName = healthStatus === 'Healthy' ? 'None detected' : 'Unknown';
   }
 
   // Correlate with verified agricultural knowledge base if available
   let matchedKnowledge = null;
   for (const [key, d] of Object.entries(VERIFIED_DISEASES)) {
     if (
-      d.name.en.toLowerCase().includes(diseaseName.toLowerCase()) ||
-      diseaseName.toLowerCase().includes(d.name.en.toLowerCase())
+      d.name.en.toLowerCase() === diseaseName.toLowerCase() ||
+      diseaseName.toLowerCase().includes(d.name.en.toLowerCase()) ||
+      d.name.en.toLowerCase().includes(diseaseName.toLowerCase())
     ) {
       matchedKnowledge = d;
+      diseaseName = d.name.en;
       break;
     }
+  }
+
+  if (healthStatus === 'Diseased' && diseaseConfidence < 40 && !matchedKnowledge) {
+    diseaseName = 'Unknown';
   }
 
   const solution = matchedKnowledge

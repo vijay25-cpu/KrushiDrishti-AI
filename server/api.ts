@@ -143,7 +143,7 @@ apiRouter.post('/auth/change-password', authenticate, (req: Request, res: Respon
 
 apiRouter.post('/analysis/predict', optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { image, mimeType } = req.body;
+    const { image, mimeType, crop } = req.body;
     if (!image) {
       return res.status(400).json({ error: 'No image data provided' });
     }
@@ -151,8 +151,8 @@ apiRouter.post('/analysis/predict', optionalAuth, async (req: Request, res: Resp
     const currentUser = (req as any).user as User | undefined;
     const userId = currentUser ? currentUser.id : 'anonymous_farmer';
 
-    // 1. Run real computer vision inference with Gemini 3.8 Flash
-    const inference = await runPlantDiagnosis(image, mimeType || 'image/jpeg');
+    // 1. Run real computer vision inference with multimodal models (with optional crop context)
+    const inference = await runPlantDiagnosis(image, mimeType || 'image/jpeg', crop);
 
     // 2. If quality validation failed or no plant detected, return guidance directly
     if (!inference.image_quality.is_valid || !inference.image_quality.has_plant) {

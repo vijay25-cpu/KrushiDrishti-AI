@@ -88,10 +88,10 @@ export const api = {
   },
 
   // Analysis
-  async predict(imageData: string, mimeType: string = 'image/jpeg') {
+  async predict(imageData: string, mimeType: string = 'image/jpeg', crop?: string) {
     return await request('/api/analysis/predict', {
       method: 'POST',
-      body: JSON.stringify({ image: imageData, mimeType }),
+      body: JSON.stringify({ image: imageData, mimeType, crop }),
     });
   },
 

@@ -10,6 +10,7 @@ import { TRANSLATIONS } from '../i18n.js';
 import { VisualOverlay } from '../components/VisualOverlay.js';
 import { ReportModal } from '../components/ReportModal.js';
 import { api } from '../api.js';
+import { formatLocalizedPlantName } from '../utils/cropLocalization.js';
 
 interface Props {
   record: AnalysisRecordData;
@@ -145,7 +146,7 @@ export const ResultView: React.FC<Props> = ({
 
           <div>
             <h2 className="text-xl font-black text-white font-['Outfit']">
-              {record.plant_name}
+              {formatLocalizedPlantName(record.plant_name, lang)}
             </h2>
             <p className="text-xs text-slate-400 italic">
               {record.scientific_name || 'Botanical classification'}

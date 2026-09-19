@@ -3,11 +3,13 @@
  * Developed by Sopan Pandit Gavali
  */
 
-import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Upload, RefreshCw, AlertTriangle, CheckCircle2, Sparkles, Image as ImageIcon, ArrowRight, ShieldAlert } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Camera, Upload, RefreshCw, AlertTriangle, CheckCircle2, Sparkles, Image as ImageIcon, ArrowRight, ShieldAlert, Sprout } from 'lucide-react';
 import { Language, AnalysisRecordData } from '../types.js';
 import { TRANSLATIONS } from '../i18n.js';
 import { api } from '../api.js';
+import { CROP_OPTIONS, CropOption } from '../utils/cropLocalization.js';
+import { SAMPLE_SPECIMENS, SampleSpecimenItem } from '../utils/sampleSpecimens.js';
 
 interface Props {
   lang: Language;
@@ -18,6 +20,7 @@ interface Props {
 export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExpert }) => {
   const t = TRANSLATIONS[lang];
 
+  const [selectedCrop, setSelectedCrop] = useState<string>('auto');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
@@ -33,6 +36,14 @@ export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExper
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Pre-generate specimen thumbnails once in memory for instant display
+  const specimenThumbnails = useMemo(() => {
+    return SAMPLE_SPECIMENS.map((item) => ({
+      ...item,
+      thumbnail: item.generateDataUrl(),
+    }));
+  }, []);
 
   const processingSteps = [
     t.stages.uploading,
@@ -143,43 +154,15 @@ export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExper
     }
   };
 
-  // Curated field sample leaf specimens for instant one-click testing
-  const sampleSpecimens = [
-    {
-      title: 'Tomato Early Blight',
-      caption: 'Target-board necrotic rings',
-      url: 'https://images.unsplash.com/photo-1592417817098-8f3d69106093?auto=format&fit=crop&w=800&q=80',
-    },
-    {
-      title: 'Healthy Potato Foliage',
-      caption: 'Vibrant green Solanum leaf',
-      url: 'https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&w=800&q=80',
-    },
-    {
-      title: 'Grape Downy Mildew',
-      caption: 'Oily chlorotic leaf spots',
-      url: 'https://images.unsplash.com/photo-1596363505729-4190a9506133?auto=format&fit=crop&w=800&q=80',
-    },
-    {
-      title: 'Rice Blast Lesions',
-      caption: 'Spindle-shaped fungal spots',
-      url: 'https://images.unsplash.com/photo-1536939459926-301728717817?auto=format&fit=crop&w=800&q=80',
-    },
-  ];
-
-  const loadSampleSpecimen = async (sampleUrl: string) => {
+  const loadSampleSpecimen = (item: SampleSpecimenItem) => {
+    setQualityError(null);
+    setGeneralError(null);
     try {
-      setQualityError(null);
-      setGeneralError(null);
-      const res = await fetch(sampleUrl);
-      const blob = await res.blob();
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setSelectedImage(reader.result as string);
-      };
-      reader.readAsDataURL(blob);
-    } catch {
-      setSelectedImage(sampleUrl);
+      const dataUrl = item.generateDataUrl();
+      setSelectedImage(dataUrl);
+      setSelectedCrop(item.crop);
+    } catch (err) {
+      console.error('Failed to generate specimen canvas:', err);
     }
   };
 
@@ -202,7 +185,7 @@ export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExper
     }, 450);
 
     try {
-      const result = await api.predict(selectedImage);
+      const result = await api.predict(selectedImage, 'image/jpeg', selectedCrop);
 
       clearInterval(stepInterval);
       setActiveStep(processingSteps.length - 1);
@@ -249,6 +232,27 @@ export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExper
         <p className="text-sm sm:text-base text-slate-300 max-w-xl mx-auto">
           {t.scan.subheading}
         </p>
+
+        {/* Crop Context Selection Filter */}
+        <div className="pt-2 max-w-md mx-auto">
+          <div className="flex items-center gap-2 bg-slate-900/90 border border-slate-700/80 rounded-2xl px-3.5 py-2 shadow-inner">
+            <Sprout className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="text-xs font-semibold text-slate-300 shrink-0">
+              Crop:
+            </span>
+            <select
+              value={selectedCrop}
+              onChange={(e) => setSelectedCrop(e.target.value)}
+              className="bg-transparent text-emerald-400 font-bold text-xs w-full focus:outline-none cursor-pointer"
+            >
+              {CROP_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id === 'auto' ? 'auto' : opt.nameEn} className="bg-slate-900 text-slate-200">
+                  {lang === 'mr' && opt.nameMr ? `${opt.nameMr} (${opt.nameEn})` : lang === 'hi' && opt.nameHi ? `${opt.nameHi} (${opt.nameEn})` : opt.nameEn}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </div>
 
       {/* Camera Live Stream Viewfinder */}
@@ -516,16 +520,16 @@ export const ScanView: React.FC<Props> = ({ lang, onScanComplete, onRequestExper
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {sampleSpecimens.map((item, idx) => (
+              {specimenThumbnails.map((item) => (
                 <div
-                  key={idx}
-                  onClick={() => loadSampleSpecimen(item.url)}
+                  key={item.id}
+                  onClick={() => loadSampleSpecimen(item)}
                   className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-emerald-500/80 cursor-pointer transition-all hover:scale-[1.02] group"
                 >
                   <img
-                    src={item.url}
+                    src={item.thumbnail}
                     alt={item.title}
-                    className="w-full h-24 object-cover rounded-lg mb-2"
+                    className="w-full h-24 object-cover rounded-lg mb-2 border border-slate-800/80"
                   />
                   <div className="text-xs font-semibold text-white truncate">{item.title}</div>
                   <div className="text-[10px] text-slate-400 truncate">{item.caption}</div>
