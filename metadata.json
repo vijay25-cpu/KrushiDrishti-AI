@@ -1,0 +1,6 @@
+{
+  "name": "KRUSHIDRISHTI AI",
+  "description": "Smart Vision for Healthier Crops - Real AI-powered plant health and crop disease analysis platform. Developed by Sopan Pandit Gavali.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
